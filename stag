@@ -1,0 +1,167 @@
+#!/usr/bin/python3
+
+import sys
+import os
+import dbm
+import argparse
+import json
+import re
+
+def parse_filter(filter):
+	# Input grammar:
+	#   FILTER = OP | FILTER ||
+	#            OP & FILTER ||
+	#            OP FILTER || (equivalent to OP & FILTER)
+	#            OP EOF
+	#   OP = ATOM || !ATOM
+	#   ATOM = ( FILTER ) ||
+	#          TAG
+	# Output: Tree = Tag | ['&', Tree, Tree] | ['|', Tree, Tree] | ['!', Tree]
+
+	# Tokenize
+	EOF = {}
+	tokens = re.split(r'([()\&\|! ])', re.sub(r'\s+', ' ', filter))
+	tokens = [t for t in tokens if t and t != ' ']
+	tokens.append(EOF)
+	tokens.reverse() # So pop() will refer to the leftmost token
+
+	def pop_filter(tokens):
+		op = pop_op(tokens)
+		token = tokens[-1]
+		if token == '|' or token == '&':
+			tokens.pop()
+			return [token, op, pop_filter(tokens)]
+		elif token is EOF or token == ')':
+			return op
+		else:
+			return ['&', op, pop_filter(tokens)]
+
+	def pop_op(tokens):
+		if tokens[-1] == '!':
+			tokens.pop()
+			return ['!', pop_atom(tokens)]
+		else:
+			return pop_atom(tokens)
+
+	def pop_atom(tokens):
+		token = tokens.pop()
+		if token == '(':
+			op = pop_filter(tokens)
+			assert tokens.pop() == ')'
+			return op
+		else:
+			return re.compile(re.escape(token).replace(r'\*', '.*'))
+
+	return pop_filter(tokens)
+
+def check_filter(filter, tags):
+	if filter is None:
+		return True
+	elif isinstance(filter, list):
+		if filter[0] == '!':
+			return not check_filter(filter[1], tags)
+		elif filter[0] == '&':
+			return check_filter(filter[1], tags) and check_filter(filter[2], tags)
+		elif filter[0] == '|':
+			return check_filter(filter[1], tags) or check_filter(filter[2], tags)
+		else:
+			assert False
+	else:
+		for tag in tags:
+			if filter.fullmatch(tag):
+				return True
+		return False
+
+def file_db_path(dbroot, file):
+	return os.path.relpath(file, dbroot).strip('/')
+
+parser = argparse.ArgumentParser()
+subparsers = parser.add_subparsers(dest='action')
+
+parser_ls = subparsers.add_parser('ls')
+parser_ls.add_argument('-r', '--recursive', action='store_true')
+parser_ls.add_argument('-a', '--show-hidden', action='store_true')
+parser_ls.add_argument('-f', '--filter')
+parser_ls.add_argument('files', nargs='*', default=['.'])
+
+parser_create = subparsers.add_parser('create')
+parser_create.add_argument('path', default='.', nargs='?')
+
+parser_add = subparsers.add_parser('add')
+parser_add.add_argument('file')
+parser_add.add_argument('tags', nargs='*')
+
+parser_del = subparsers.add_parser('del')
+parser_del.add_argument('file')
+parser_del.add_argument('tags', nargs='*')
+
+opts = parser.parse_args()
+
+if opts.action == 'create':
+	dbm.open(os.path.join(opts.path, '.tags'), 'c').close()
+	sys.exit(0)
+
+db = None
+dbroot = os.path.abspath(os.getcwd())
+while dbroot != '/':
+	dbpath = os.path.join(dbroot, '.tags')
+	if os.path.exists(dbpath):
+		db = dbm.open(dbpath, 'w')
+		break
+	dbroot = os.path.abspath(os.path.join(dbroot, '..'))
+dbroot = dbroot.rstrip('/')
+
+if db is None:
+	print('Cannot locate database', file=sys.stderr)
+	sys.exit(1)
+
+if opts.action == 'add':
+	relpath = file_db_path(dbroot, opts.file)
+	tags = json.loads(db.get(relpath, '[]'))
+	for tag in opts.tags:
+		if not tag in tags:
+			tags.append(tag)
+	tags.sort()
+	db[relpath] = json.dumps(tags)
+	print(' '.join(tags))
+elif opts.action == 'del':
+	relpath = file_db_path(dbroot, opts.file)
+	tags = json.loads(db.get(relpath, '[]'))
+	for tag in opts.tags:
+		tags.remove(tag)
+	db[relpath] = json.dumps(tags)
+	if tags:
+		print(' '.join(tags))
+elif opts.action == 'ls':
+	def lstags(file, depth, filter):
+		tags = json.loads(db.get(file_db_path(dbroot, file), '[]'))
+		result = []
+		if check_filter(filter, tags):
+			display_name = os.path.relpath(file)
+			if os.path.isdir(file):
+				display_name += '/'
+			result.append((display_name, tags))
+		if depth > 0 and os.path.isdir(file):
+			for child in os.listdir(file):
+				if not child[0] == '.' or opts.show_hidden:
+					result.extend(lstags(os.path.join(file, child), depth-1, filter))
+		return result
+
+	filter = None
+	if opts.filter:
+		filter = parse_filter(opts.filter)
+
+	result = []
+	for file in opts.files:
+		depth = 1
+		if opts.recursive:
+			depth = float('inf')
+		result.extend(lstags(file, depth, filter))
+	if result:
+		max_width = min(50, max(len(file) for file, _ in result))
+		fmt = '%%-%ds  %%s' % max_width
+		for file, tags in result:
+			print(fmt % (file, ' '.join(tags)))
+
+db.sync()
+db.close()
