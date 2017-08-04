@@ -127,11 +127,19 @@ if opts.action == 'add':
 elif opts.action == 'del':
 	relpath = file_db_path(dbroot, opts.file)
 	tags = json.loads(db.get(relpath, '[]'))
-	for tag in opts.tags:
-		tags.remove(tag)
-	db[relpath] = json.dumps(tags)
+	new_tags = []
+	filters = [parse_filter(t) for t in opts.tags]
+	for tag in tags:
+		removed = False
+		for f in filters:
+			if check_filter(f, [tag]):
+				removed = True
+				break
+		if not removed:
+			new_tags.append(tag)
+	db[relpath] = json.dumps(new_tags)
 	if tags:
-		print(' '.join(tags))
+		print(' '.join(new_tags))
 elif opts.action == 'ls':
 	def lstags(file, depth, filter):
 		tags = json.loads(db.get(file_db_path(dbroot, file), '[]'))
