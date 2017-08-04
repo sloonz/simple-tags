@@ -119,8 +119,8 @@ if opts.action == 'add':
 	relpath = file_db_path(dbroot, opts.file)
 	tags = json.loads(db.get(relpath, '[]'))
 	for tag in opts.tags:
-		if not tag in tags:
-			tags.append(tag)
+		if (not tag in tags) and tag.strip():
+			tags.append(tag.strip())
 	tags.sort()
 	db[relpath] = json.dumps(tags)
 	print(' '.join(tags))
