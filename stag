@@ -165,6 +165,7 @@ elif opts.action == 'ls':
 		if opts.recursive:
 			depth = float('inf')
 		result.extend(lstags(file, depth, filter))
+	result.sort()
 	if result:
 		max_width = min(50, max(len(file) for file, _ in result))
 		fmt = '%%-%ds  %%s' % max_width
